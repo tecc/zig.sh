@@ -5,53 +5,20 @@ A small script that downloads Zig if necessary and then invokes the Zig binary.
 ## Usage: `zig.sh`
 
 1. Copy `zig.sh` to your project's directory, i.e. to `<project>/zig.sh`.
-2. (OPTIONAL) Create a `<project>/.zig-version` file that contains your desired Zig version (e.g. `master`, `0.16.0`).
+2. (OPTIONAL) Create a `<project>/.zig-version` file that contains your desired Zig version (e.g. `0.16.0`, `0.17.0-dev.1387+01b60634c`).
 3. Replace all direct uses of `zig` with `zig.sh`.
 
 The scripts are intended to be copied _verbatim_ to your projects and then never modified.
 
-### Option: Zig version
-
-Which Zig version you want is configurable.
-`zig.sh` looks for the first one of the following to find the desired Zig version:
-
-- A `ZIG_VERSION` environment variable.
-- A `.zig-version` file next to the `zig.sh` file.
-
-If no value was found, it assumes that you want the version referred to as `master` at any given time.
-
-> [!NOTE]
-> `master` was chosen because otherwise `zig.sh` would have to be updated with every release.
-
-### Option: Force downloads
-
-Force `zig.sh` to always download everything by using `ZIGSH_FORCE_DOWNLOAD`
-
-### Option: Mirror (TODO)
-
-Specify which mirror to use when downloading Zig.
-This is done by changing a URL to a `index.json`, which contains the necessary information for downloading Zig.
-
-`zig.sh` does the following (in order) to determine `ZIGSH_INDEX_URL`:
-
-1. If the `ZIGSH_INDEX_URL` environment variable is set, do nothing.
-2. If the `ZIGSH_MIRROR` environment variable is set, set `ZIGSH_INDEX_URL` to `${ZIGSH_MIRROR}/index.json`.
-3. If the `ZIGSH_MIRRORS` environment variable is set, interpret it as a list of mirrors (separated with either `;` or newline).
-   Select one entry at random from this list to be `ZIGSH_MIRROR`.
-   Set `ZIGSH_INDEX_URL` to `${ZIGSH_MIRROR}/index.json`.
-4. If the `ZIGSH_MIRRORS_TXT` environment variable is set, do the following:
-   - If either of the following are true, set `ZIGSH_MIRRORS` to the contents of `https://ziglang.org/download/community-mirrors.txt`:
-     - `${ZIGSH_MIRRORS_TXT}` does not exist on the file system.
-     - `${ZIGSH_MIRRORS_TXT}` exists, but it is considered too old.
-     - `ZIGSH_FORCE_DOWNLOAD` is set.
-   - Otherwise, set `ZIGSH_MIRRORS` to the content of `${ZIGSH_MIRRORS_TXT}`, and continue from (3).
-5. Set `ZIGSH_MIRRORS_TXT` to be `${ZIG_BASE_DIR}/community-mirrors.txt`, and continue from (4).
+Please read the `zig.sh`.
 
 ## TODO list
 
 - [ ] Is it worth making a `zls.sh`?
 - [ ] Perhaps more ways of detecting the desired version.
-- [ ] Support community mirrors
+  - [ ] `build.zig.zon`'s `minimum_zig_version`
+- [x] Support community mirrors
+- [x] Verify minisign signatures
 
 ## Licence
 

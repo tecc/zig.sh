@@ -9,6 +9,11 @@
 #   ZIGSH_FORCE_DOWNLOAD
 #     Forces a download of Zig regardless of whether it is already downloaded
 #     or not.
+#   ZIGSH_VERBOSE
+#     Output more stuff. Useful for debugging.
+#   ZIGSH_PROJECT_DIR
+#     Set the project directory for which Zig installations will be made.
+#     By default, this takes the value of the directory the script file is in.
 #   ZIG_VERSION
 #     Override the version of Zig used.
 #     By default:
@@ -21,9 +26,9 @@
 #     https://ziglang.org/download/index.json are supported.
 #
 # Dependencies
-#   bash  to run this script
-#   curl  to fetch data from the internet
-#   jq    to parse JSON objects
+#   bash      to run this script
+#   curl      to fetch data from the internet
+#   minisign  to verify file signatures
 # 
 # Copyright (c) 2026 tecc
 #
@@ -47,85 +52,281 @@
 
 set -euo pipefail
 
-# https://stackoverflow.com/a/246128/11009859
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+# Formatting parameters for colours
+C_norm=""
+C_info=""
+C_mark=""
+C_err=""
+C_reset=""
 
-if [ ! -z ${ZIG_VERSION+x} ]; then
-    # ZIG_VERSION is already set, do nothing
-    :
-elif [ -f "$SCRIPT_DIR/.zig-version" ]; then
-    # .zig-version exists, so use that
-    ZIG_VERSION=$(cat "$SCRIPT_DIR/.zig-version" | sed 's/^ *//;s/ *$//')
-else
-    # No version was set explicitly, so default to master
-    ZIG_VERSION="master"
+# Snippet based on: https://unix.stackexchange.com/a/10065
+if test -t 1; then
+    ncolors=$(tput colors)
+    if test -n "$ncolors" && test $ncolors -ge 8; then
+        C_norm="$(tput sgr0)$(tput setaf 7)"
+        C_dbg="$(tput sitm)$(tput dim)"
+        C_info="$(tput bold)$(tput setaf 6)"
+        C_mark="$(tput bold)$(tput setaf 5)"
+        C_err="$(tput bold)$(tput setaf 1)"
+        C_reset="$(tput sgr0)"
+    fi
 fi
 
-ZIG_BASE_DIR="$SCRIPT_DIR/zig"
-ZIG_VERSIONED_DIR="$ZIG_BASE_DIR/$ZIG_VERSION"
-
-downloadZig() {
-    C_info=""
-    C_mark=""
-    C_err=""
-    C_reset=""
-
-    # Snippet based on: https://unix.stackexchange.com/a/10065
-    if test -t 1; then
-        ncolors=$(tput colors)
-        if test -n "$ncolors" && test $ncolors -ge 8; then
-            C_info="$(tput bold)$(tput setaf 7)"
-            C_mark="$(tput bold)$(tput setaf 5)"
-            C_err="$(tput bold)$(tput setaf 1)"
-            C_reset="$(tput sgr0)"
-        fi
+logWrite() {
+    printf "$@" >&2
+}
+logError() {
+    logWrite "${C_err}zig.sh! ${C_norm}%s${C_reset}\n" "$@"
+}
+logInfo() {
+    logWrite "${C_info}zig.sh: ${C_norm}%s${C_reset}\n" "$@"
+}
+logDebug() {
+    if [ $ZIGSH_VERBOSE == 1 ]; then
+        logWrite "${C_dbg}zig.sh: %s${C_reset}\n" "$@"
     fi
+}
 
-    printf "${C_info}zig.sh: preparing to download version ${C_mark}$ZIG_VERSION ${C_info}to ${C_mark}$ZIG_VERSIONED_DIR${C_reset}\n"
-    # Find out which build of Zig to download
+ZIGSH_VERBOSE=${ZIGSH_VERBOSE:=0}
+
+if [ $ZIGSH_VERBOSE ]; then
+    exec 3>&2
+else
+    exec 3>/dev/null
+fi
+
+# By default, ZIGSH_PROJECT_DIR is whatever directory zig.sh is in.
+# https://stackoverflow.com/a/246128/11009859
+ZIGSH_PROJECT_DIR=${ZIGSH_PROJECT_DIR:=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )}
+
+# ZIG_VERSION detection
+ZIG_VERSION=${ZIG_VERSION:=}
+if [ -z "$ZIG_VERSION" ] && [ -f "$ZIGSH_PROJECT_DIR/.zig-version" ]; then
+    # .zig-version exists, so use that
+    ZIG_VERSION=$(cat "$ZIGSH_PROJECT_DIR/.zig-version" | sed 's/^ *//;s/ *$//')
+fi
+if [ -z "$ZIG_VERSION" ] && [ -f "$ZIGSH_PROJECT_DIR/build.zig.zon" ]; then
+    # TODO: Parse build.zig.zon
+    logError "cannot detect versions from build.zig.zon"
+fi
+if [ -z "$ZIG_VERSION" ]; then
+    # No version detected, so error
+    logError "no version detected; use either ${C_mark}ZIG_VERSION${C_norm} or ${C_mark}.zig-version${C_norm} to configure"
+    exit 1
+fi
+
+ZIG_BASE_DIR="$ZIGSH_PROJECT_DIR/zig"
+ZIG_MINISIGN_PUBKEY="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
+
+# Determine which platform we're on
+if [ -z ${ZIGSH_PLATFORM+x} ]; then
+    # Get platform parameters
     case $(uname -s) in
         "Linux")
             operating_system="linux" ;;
         "Darwin")
             operating_system="macos" ;;
         *)
-            echo "Unknown operating system; cannot download zig" ;;
+            logError "Unknown operating system; cannot select Zig build" ;;
     esac
     architecture=$(uname -m)
+    ZIGSH_PLATFORM="$architecture-$operating_system"
+fi
 
-    if [ -f $ZIG_VERSIONED_DIR ]; then
-        rm -rf $ZIG_VERSIONED_DIR
+ZIG_VERSIONED_DIR="$ZIG_BASE_DIR/$ZIGSH_PLATFORM-$ZIG_VERSION"
+
+last_successful_mirror=0
+mirroredFetch() {
+    path=""
+    output_file=""
+    output_var=""
+    
+    OPTIND=1
+    while getopts "p:o:v:" opt ; do
+        case $opt in
+            p)
+                path=$OPTARG
+                ;;
+            o)
+                output_file=$OPTARG
+                ;;
+            v)
+                output_var=$OPTARG
+                ;;
+            *)
+                logError "internal error: bad argument"
+                exit 1
+                ;;
+        esac
+    done
+
+    curl_args=("--output" "$output_file")
+    
+    success=0
+    mirror_count=${#ZIGSH_MIRRORS[@]}
+    for mirror_index_base in ${!ZIGSH_MIRRORS[@]};
+    do
+        mirror_index=$(( ($mirror_index_base + $last_successful_mirror) % $mirror_count ))
+        mirror=${ZIGSH_MIRRORS[$mirror_index]}
+        full_url="$mirror$path"
+        logDebug "attempting to download $full_url"
+        if ! result=$(curl -S -s --write-out "%{http_code}" ${curl_args[@]} "$full_url" 2>&3 ) ; then
+            logDebug "download failed"
+            continue
+        fi
+        if [ "$result" != "200" ]; then
+            logDebug "download failed with non-200 status code $result"
+            continue
+        fi
+        success=1
+        successful_mirror=$mirror_index
+        successful_mirror_index=$mirror_index_base
+        
+        logDebug "download succeeded"
+        break
+    done
+
+    if [ "$success" == 1 ] && [ "$successful_mirror_index" != 0 ]; then
+        logError "$successful_mirror_index mirrors failed before succeeeding - try reorganising the mirror list"
+        # We keep track of this so that further fetches may have a greater chance of succeeding
+        last_successful_mirror=$successful_mirror
     fi
-    mkdir -p $ZIG_BASE_DIR
+    if [ "$success" == 0 ]; then
+        rm $output_file
+    fi
 
-    printf "${C_info}zig.sh: fetching version index...${C_reset}\n"
-    versions=$(curl -L "https://ziglang.org/download/index.json")
+    if [ -n "$output_var" ]; then
+        logDebug "variable $output_var"
+        printf -v "$output_var" "$success"
+    fi
+}
 
-    jq_version=".[\"$ZIG_VERSION\"]"
-    jq_download="$jq_version.[\"$architecture-$operating_system\"]"
+downloadZig() {
+    mkdir -p "$ZIG_BASE_DIR"
+    
+    # Determine which is supposed to be used.
+    # It is assumed that mirrors replace the URLs in the JSON with their own.
+    if [ -z ${ZIGSH_MIRROR+x} ]; then
+        if [ -z ${ZIGSH_MIRRORS+x} ] ; then
+            ZIGSH_MIRRORS_TXT=${ZIGSH_MIRRORS_TXT:-$ZIG_BASE_DIR/community-mirrors.txt}
+            ZIGSH_MIRRORS_TTL=${ZIGSH_MIRRORS_TTL:-1440}
+            if [ $(find "$ZIGSH_MIRRORS_TXT" -mmin "-$ZIGSH_MIRRORS_TTL" -print 2> /dev/null ) ]; then
+                ZIGSH_MIRRORS=$(cat $ZIGSH_MIRRORS_TXT)
+            else
+                logInfo "downloading mirrors list from ${C_mark}${ZIGSH_MIRRORS_URL:=https://ziglang.org/download/community-mirrors.txt}${C_norm}..."
+                if ! curl -s -f --output "$ZIGSH_MIRRORS_TXT" "$ZIGSH_MIRRORS_URL" 2>&3 ; then
+                    logError "could not download mirrors, using builtin list"
+                    # ziglang.org/download/community-mirrors.txt (2026-07-17) 
+                    ZIGSH_MIRRORS=(
+                        "https://pkg.hexops.org/zig"
+                        "https://zigmirror.hryx.net/zig"
+                        "https://zig.linus.dev/zig"
+                        "https://zig.squirl.dev"
+                        "https://zig.mirror.mschae23.de/zig"
+                        "https://ziglang.freetls.fastly.net"
+                        "https://zig.tilok.dev"
+                        "https://zig-mirror.tsimnet.eu/zig"
+                        "https://zig.karearl.com/zig"
+                        "https://pkg.earth/zig"
+                        "https://fs.liujiacai.net/zigbuilds"
+                        "https://zigmirror.com"
+                        "https://zig.chainsafe.dev"
+                        "https://zig.savalione.com"
+                        "https://zig.bcr.ist"
+                        "https://zig.vortan.dev/zig"
+                    )
+                else
+                    shuf -o $ZIGSH_MIRRORS_TXT < $ZIGSH_MIRRORS_TXT
+                    ZIGSH_MIRRORS=$(cat $ZIGSH_MIRRORS_TXT)
+                fi
+            fi
+        fi
+        # Ensure ZIGSH_MIRRORS is an array 
+        readarray -t mirrors <<< "$ZIGSH_MIRRORS"
+        ZIGSH_MIRRORS=( ${mirrors[@]} )
+        logDebug "mirror list: ${ZIGSH_MIRRORS[*]}"
+    fi
+    # exit 0
 
-    version=$(echo $versions | jq -r "$jq_version.version")
-    date=$(echo $versions | jq -r "$jq_version.date")
-    tarball_url=$(echo $versions | jq -r "$jq_download.tarball")
-    tarball_shasum=$(echo $versions | jq -r "$jq_download.shasum")
-    archive_name=$(basename $tarball_url)
+    if [ "$ZIG_VERSION" == "master" ]; then
+        logInfo "requested version is 'master' - this is discouraged as it requires work to resolve!"
 
-    if [ "$version" == "null" ]; then
-        printf "${C_err}zig.sh: requested version ${C_mark}$ZIG_VERSION${C_err} does not exist${C_reset}\n"
+        logError "TODO: resolve master version"
         exit 1
+    else
+        version_resolved=$ZIG_VERSION
     fi
-    printf "${C_info}zig.sh: resolved ${C_mark}$ZIG_VERSION${C_info} as version ${C_mark}$version ($date)${C_info}; downloading...${C_reset}\n"
+
+    case "$version_resolved" in
+        0.[1-9].[0-9] | 0.1[0-3].[0-9] | 0.14.0)
+            # Versions <=0.14.1 used this naming scheme for archives
+            archive_name="zig-$operating_system-$architecture-$version_resolved.tar.xz"
+            ;;
+        *)
+            archive_name="zig-$architecture-$operating_system-$version_resolved.tar.xz"
+            ;;
+    esac
+    case $version_resolved in
+        *-dev.*)
+            # Development versions have different paths
+            archive_path="/builds/$archive_name"
+            ;;
+        *)
+            archive_path="/$version_resolved/$archive_name"
+            ;;
+    esac
 
     mkdir -p $ZIG_VERSIONED_DIR
 
-    curl -L --output "$ZIG_BASE_DIR/$archive_name" "$tarball_url"
-    echo "$tarball_shasum $ZIG_BASE_DIR/$archive_name" | sha256sum --check
+    logInfo "downloading ${C_mark}$archive_name${C_norm}..."
+    
+    mirroredFetch -v archive_fetch_result -p "$archive_path" -o "$ZIG_BASE_DIR/$archive_name"
+    
+    if [ "$archive_fetch_result" != 1 ]; then
+        logError "could not fetch archive; either the requested version does not exist, or it does not have a build for your platform"
+        exit 1
+    fi
 
-    printf "${C_info}zig.sh: extracting...${C_reset}\n"
+    mirroredFetch -v archive_sig_fetch_result -p "$archive_path.minisig" -o "$ZIG_BASE_DIR/$archive_name.minisig"
+    if [ "$archive_sig_fetch_result" != 1 ]; then
+        logError "could not fetch archive signature, but archive could be fetched (this is strange)"
+        exit 1
+    fi
+    
+    logInfo "verifying signatures..."
+    if ! minisign -V -q -P "$ZIG_MINISIGN_PUBKEY" -m "$ZIG_BASE_DIR/$archive_name" ; then
+        logError "cannot verify tarball's minisign signature"
+        exit 1
+    fi
+
+    trusted_comment=($(minisign -V -Q -P "$ZIG_MINISIGN_PUBKEY" -m "$ZIG_BASE_DIR/$archive_name"))
+
+    sig_valid_file=0
+    for field in ${trusted_comment[@]}; do
+        case $field in
+            file:*)
+                IFS=':' read -ra field <<< $field
+                if [ "${field[1]}" != "$archive_name" ]; then
+                    logError "signature was made for file ${field[1]}, but expected $archive_name"
+                    exit 1
+                fi
+                sig_valid_file=1
+                ;;
+            *)
+                ;;
+        esac            
+    done
+
+    if [ $sig_valid_file == 0 ]; then
+        logError "signature is missing file field in trusted comment"
+        exit 1
+    fi
+
+    logInfo "extracting..."
     tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$ZIG_VERSIONED_DIR" --strip-components=1
-    rm "$ZIG_BASE_DIR/$archive_name"
+    rm "$ZIG_BASE_DIR/$archive_name" "$ZIG_BASE_DIR/$archive_name.minisig"
 
-    printf "${C_info}zig.sh: done! enjoy programming in Zig ${C_mark}<3${C_info}\n"
+    logInfo "done! enjoy programming in Zig ${C_mark}<3"
 }
 
 
