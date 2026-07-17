@@ -25,12 +25,33 @@ If no value was found, it assumes that you want the version referred to as `mast
 
 ### Option: Force downloads
 
-Force `zig.sh` to always download the file.
+Force `zig.sh` to always download everything by using `ZIGSH_FORCE_DOWNLOAD`
+
+### Option: Mirror (TODO)
+
+Specify which mirror to use when downloading Zig.
+This is done by changing a URL to a `index.json`, which contains the necessary information for downloading Zig.
+
+`zig.sh` does the following (in order) to determine `ZIGSH_INDEX_URL`:
+
+1. If the `ZIGSH_INDEX_URL` environment variable is set, do nothing.
+2. If the `ZIGSH_MIRROR` environment variable is set, set `ZIGSH_INDEX_URL` to `${ZIGSH_MIRROR}/index.json`.
+3. If the `ZIGSH_MIRRORS` environment variable is set, interpret it as a list of mirrors (separated with either `;` or newline).
+   Select one entry at random from this list to be `ZIGSH_MIRROR`.
+   Set `ZIGSH_INDEX_URL` to `${ZIGSH_MIRROR}/index.json`.
+4. If the `ZIGSH_MIRRORS_TXT` environment variable is set, do the following:
+   - If either of the following are true, set `ZIGSH_MIRRORS` to the contents of `https://ziglang.org/download/community-mirrors.txt`:
+     - `${ZIGSH_MIRRORS_TXT}` does not exist on the file system.
+     - `${ZIGSH_MIRRORS_TXT}` exists, but it is considered too old.
+     - `ZIGSH_FORCE_DOWNLOAD` is set.
+   - Otherwise, set `ZIGSH_MIRRORS` to the content of `${ZIGSH_MIRRORS_TXT}`, and continue from (3).
+5. Set `ZIGSH_MIRRORS_TXT` to be `${ZIG_BASE_DIR}/community-mirrors.txt`, and continue from (4).
 
 ## TODO list
 
 - [ ] Is it worth making a `zls.sh`?
 - [ ] Perhaps more ways of detecting the desired version.
+- [ ] Support community mirrors
 
 ## Licence
 
