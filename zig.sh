@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
+# zig.sh by tecc - https://github.com/tecc/zig.sh
+# 
 # This Bash script downloads a specified version of Zig if necessary.
-# Afterwards, it invokes the Zig binary with the arguments given to the script.
+# It then invokes the Zig binary with the arguments given to the script.
 # Idea based on:
 #   https://matklad.github.io/2023/06/02/the-worst-zig-version-manager.html
 #
@@ -17,18 +19,19 @@
 #   ZIG_VERSION
 #     Override the version of Zig used.
 #     By default:
-#       - If a .zig-version file exists next to the script file, ZIG_VERSION is
+#       - If a .zig-version file exists in ZIGSH_PROJECT_DIR, ZIG_VERSION is
 #         set to the contents of that file. For example:
 #           - A/zig.sh would use A/.zig-version
 #           - B/zig.sh would use B/.zig-version
-#       - Otherwise, it is set to "master".
-#     It is important to note that only those versions that are listed in
-#     https://ziglang.org/download/index.json are supported.
-#
+#       - If a build.zig.zon file exists in ZIGSH_PROJECT_DIR, and it contains
+#         a .minimum_zig_version field, ZIG_VERSION is set to the value of that
+#         field.
+# 
 # Dependencies
 #   bash      to run this script
 #   curl      to fetch data from the internet
 #   minisign  to verify file signatures
+#   sed       to find substrings in files
 # 
 # Copyright (c) 2026 tecc
 #
@@ -106,8 +109,11 @@ if [ -z "$ZIG_VERSION" ] && [ -f "$ZIGSH_PROJECT_DIR/.zig-version" ]; then
     ZIG_VERSION=$(cat "$ZIGSH_PROJECT_DIR/.zig-version" | sed 's/^ *//;s/ *$//')
 fi
 if [ -z "$ZIG_VERSION" ] && [ -f "$ZIGSH_PROJECT_DIR/build.zig.zon" ]; then
-    # TODO: Parse build.zig.zon
-    logError "cannot detect versions from build.zig.zon"
+    bzz_min_version=$(cat "$ZIGSH_PROJECT_DIR/build.zig.zon" | sed -n "s/^.*minimum_zig_version\s*=\s*\"\(.*\)\".*$/\1/p")
+    # bzz_min_version is empty if build.zig.zon does not contain a minimum_zig_version
+    if [ -n $bzz_min_version ]; then
+        ZIG_VERSION=$bzz_min_version
+    fi
 fi
 if [ -z "$ZIG_VERSION" ]; then
     # No version detected, so error
@@ -203,9 +209,7 @@ mirroredFetch() {
 
 downloadZig() {
     mkdir -p "$ZIG_BASE_DIR"
-    
-    # Determine which is supposed to be used.
-    # It is assumed that mirrors replace the URLs in the JSON with their own.
+    # Determine which mirror is supposed to be used.
     if [ -z ${ZIGSH_MIRROR+x} ]; then
         if [ -z ${ZIGSH_MIRRORS+x} ] ; then
             ZIGSH_MIRRORS_TXT=${ZIGSH_MIRRORS_TXT:-$ZIG_BASE_DIR/community-mirrors.txt}
@@ -246,7 +250,6 @@ downloadZig() {
         ZIGSH_MIRRORS=( ${mirrors[@]} )
         logDebug "mirror list: ${ZIGSH_MIRRORS[*]}"
     fi
-    # exit 0
 
     if [ "$ZIG_VERSION" == "master" ]; then
         logInfo "requested version is 'master' - this is discouraged as it requires work to resolve!"
@@ -266,9 +269,12 @@ downloadZig() {
             archive_name="zig-$architecture-$operating_system-$version_resolved.tar.xz"
             ;;
     esac
+    # archive_path is the file that would need to be affixed to ziglang.org for
+    # it to resolve to the correct archive.
     case $version_resolved in
         *-dev.*)
-            # Development versions have different paths
+            # Development versions are stored in /builds and not in a version
+            # directory
             archive_path="/builds/$archive_name"
             ;;
         *)
@@ -294,12 +300,10 @@ downloadZig() {
     fi
     
     logInfo "verifying signatures..."
-    if ! minisign -V -q -P "$ZIG_MINISIGN_PUBKEY" -m "$ZIG_BASE_DIR/$archive_name" ; then
+    if ! trusted_comment=$(minisign -V -Q -P "$ZIG_MINISIGN_PUBKEY" -m "$ZIG_BASE_DIR/$archive_name") ; then
         logError "cannot verify tarball's minisign signature"
         exit 1
     fi
-
-    trusted_comment=($(minisign -V -Q -P "$ZIG_MINISIGN_PUBKEY" -m "$ZIG_BASE_DIR/$archive_name"))
 
     sig_valid_file=0
     for field in ${trusted_comment[@]}; do
@@ -328,7 +332,6 @@ downloadZig() {
 
     logInfo "done! enjoy programming in Zig ${C_mark}<3"
 }
-
 
 # If zig exists, don't download it.
 # Allow overriding.
