@@ -1,0 +1,61 @@
+# zig.sh
+
+A small script that downloads Zig if necessary and then invokes the Zig binary.
+
+## Usage: `zig.sh`
+
+1. Copy `zig.sh` to your project's directory, i.e. to `<project>/zig.sh`.
+2. (OPTIONAL) Create a `<project>/.zig-version` file that contains your desired Zig version (e.g. `master`, `0.16.0`).
+3. Replace all direct uses of `zig` with `zig.sh`.
+
+The scripts are intended to be copied _verbatim_ to your projects and then never modified.
+
+### Option: Zig version
+
+Which Zig version you want is configurable.
+`zig.sh` looks for the first one of the following to find the desired Zig version:
+
+- A `ZIG_VERSION` environment variable.
+- A `.zig-version` file next to the `zig.sh` file.
+
+If no value was found, it assumes that you want the version referred to as `master` at any given time.
+
+> [!NOTE]
+> `master` was chosen because otherwise `zig.sh` would have to be updated with every release.
+
+### Option: Force downloads
+
+Force `zig.sh` to always download the file.
+
+## TODO list
+
+- [ ] Is it worth making a `zls.sh`?
+- [ ] Perhaps more ways of detecting the desired version.
+
+## Licence
+
+The licence text may be found in [./LICENCE](./LICENCE), but it is reproduced here because why not?
+
+```
+MIT License
+
+Copyright (c) 2026 tecc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
