@@ -36,6 +36,7 @@
 # Dependencies
 #   bash      to run this script
 #   curl      to fetch data from the internet
+#   git       (optional) to download ZLS sources
 #   minisign  to verify file signatures
 #   sed       to find substrings in files
 #   tar       to extract archives
@@ -440,35 +441,58 @@ downloadZlsPrebuilt() {
 }
 
 buildZlsFromSource() {
+    previous_dir=$(pwd)
+    build_dir="$ZIG_VERSIONED_DIR/zls-src"
+
+    is_archive=1
     if [ -n "$zls_release_tag" ]; then
         logInfo "downloading ZLS sources for $zls_release_tag"
         archive_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/archive/refs/tags/$zls_release_tag.tar.gz"
         archive_name="zls-src-$zls_release_tag.tar.gz"
     else
-        logInfo "downloading ZLS sources from master branch"
-        archive_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/archive/refs/heads/master.tar.gz"
-        archive_name="zls-src-master.tar.gz"
+        if git --version > /dev/null ; then
+            logInfo "downloading ZLS sources using git"
+            is_archive=0
+            if [ -d "$build_dir/.git" ]; then
+                logDebug "$build_dir/.git exists, pulling and checking out"
+                cd $build_dir
+                git pull
+                git checkout master
+                cd $previous_dir
+            elif [ -d "$build_dir" ]; then
+                logError "build directory ${C_mark}$build_dir${C_norm} already exists - try deleting it"
+                exit 1
+            else
+                logDebug "cloning git repository"
+                git clone "https://github.com/$ZIGSH_ZLS_REPOSITORY" $build_dir
+            fi
+        else
+            logInfo "downloading ZLS sources from master branch archive"
+            archive_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/archive/refs/heads/master.tar.gz"
+            archive_name="zls-src-master.tar.gz"
+        fi
     fi
 
-    if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ] ; then
-        logError "downloading archive failed with status $fetch_result"
-        exit 1
+    if [ $is_archive == 1 ]; then    
+        if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ] ; then
+            logError "downloading archive failed with status $fetch_result"
+            exit 1
+        fi
+        logInfo "extracting sources..."
+        tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$build_dir" --strip-components 1
+        rm "$ZIG_BASE_DIR/$archive_name"
     fi
-
-    build_dir="$ZIG_VERSIONED_DIR/zls-src"
-    mkdir -p "$build_dir"
-
-    logInfo "extracting sources..."
-    tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$build_dir" --strip-components 1
 
     logInfo "building ZLS..."
     ZIG=$(realpath "$ZIG_VERSIONED_DIR/zig")
-    previous_dir=$(pwd)
+    
     cd $build_dir
-    $ZIG build -Doptimize=ReleaseSafe "-Dversion=$zls_version_prefix-dev.+zigsh"
+    $ZIG build -Doptimize=ReleaseSafe
     cd $previous_dir
 
     mv "$ZIG_VERSIONED_DIR/zls-src/zig-out/bin/zls" "$ZIG_VERSIONED_DIR/zls"
+
+    zls_installed=1
 }
 
 zls_installed=0
@@ -504,11 +528,10 @@ installZls() {
             try_prebuilt=1
             ;;
     esac
-    
     if [ -n "$zls_version_prefix" ]; then
         logInfo "finding appropriate ZLS version for ${C_mark}$zls_version_prefix.x${C_norm}..."
+
         logDebug "${ZIGSH_ZLS_RELEASES_JSON:="$ZIG_BASE_DIR/zls-releases.json"}"
-        
         if [ -z $(find "$ZIGSH_ZLS_RELEASES_JSON" -mmin "-${ZIGSH_ZLS_RELEASES_TTL:=30}" -print 2> /dev/null ) ] ; then
             fetch_result=$(curl -L -s -S --write-out "%{http_code}" --output "$ZIG_BASE_DIR/zls-releases.json" \
                 -H "Accept: application/vnd.github+json" \
@@ -518,6 +541,8 @@ installZls() {
                 logError "could not get ZLS releases list"
                 exit 1
             fi
+        else
+            logDebug "using cached ZLS releases"
         fi
         zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" < "$ZIG_BASE_DIR/zls-releases.json"))
         for release_tag in ${zls_release_tags[@]} ; do
@@ -533,6 +558,8 @@ installZls() {
         done
     fi
 
+    logDebug "version prefix: $zls_version_prefix / release tag: $zls_release_tag"
+
     if [ "$try_prebuilt" == 1 ]; then
         if [ ${ZIGSH_ZLS_NO_PREBUILD:=0} == 0 ]; then
             downloadZlsPrebuilt
@@ -545,8 +572,6 @@ installZls() {
     if [ "$zls_installed" == 0 ]; then
         buildZlsFromSource
     fi
-
-    exit 1
 }
 
 if [ ! -f "$ZIG_VERSIONED_DIR/zls" ] || [ ! -z ${ZIGSH_FORCE_DOWNLOAD+x} ]; then
