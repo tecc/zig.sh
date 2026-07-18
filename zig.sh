@@ -450,10 +450,10 @@ buildZlsFromSource() {
         archive_name="zls-src-master.tar.gz"
     fi
 
-    # if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ] ; then
-    #     logError "downloading archive failed with status $fetch_result"
-    #     exit 1
-    # fi
+    if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ] ; then
+        logError "downloading archive failed with status $fetch_result"
+        exit 1
+    fi
 
     build_dir="$ZIG_VERSIONED_DIR/zls-src"
     mkdir -p "$build_dir"
