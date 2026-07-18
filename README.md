@@ -14,9 +14,8 @@ Please read the `zig.sh`.
 
 ## TODO list
 
-- [ ] Is it worth making a `zls.sh`?
-- Perhaps more ways of detecting the desired version.
-  - [x] `build.zig.zon`'s `minimum_zig_version`
+- [x] ZLS installation
+- [x] Autodetection of Zig version `build.zig.zon`'s `minimum_zig_version`
 - [x] Support community mirrors
 - [x] Verify minisign signatures
 
