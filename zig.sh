@@ -231,9 +231,8 @@ verifySignatureOrExit() {
     pubkey=$2
     expected_file_field=$3
 
-    logDebug "verifying signature for $file"
-    logInfo "verifying signature"
-        
+    logInfo "verifying signature for $file"
+            
     if ! trusted_comment=$(minisign -V -Q -P "$pubkey" -m "$file") ; then
         logError "${C_mark}$file${C_norm}'s signature is invalid!"
         exit 1
@@ -376,35 +375,9 @@ fi
 ZIGSH_ZLS_REPOSITORY=${ZIGSH_ZLS_REPOSITORY:="zigtools/zls"}
 
 downloadZlsPrebuilt() {
-    zls_release_tag=""
-    zls_version_prefix=$(sed -n "s/^\(.\..*\)\..*$/\1/p" <<< "$version_resolved")
-    if [ -z "$zls_version_prefix" ]; then
-        logError "cannot determine appropriate major-minor version for ZLS"
-        exit 1
-    fi
-
-    logInfo "finding appropriate ZLS version for ${C_mark}$zls_version_prefix.x${C_norm}..."
-    zls_releases=$(curl -L -s --output "$ZIG_BASE_DIR/zls-releases.json" \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2026-03-10"    \
-        "https://api.github.com/repos/$ZIGSH_ZLS_REPOSITORY/releases")
-
-    zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" < "$ZIG_BASE_DIR/zls-releases.json"))    
-    for release_tag in ${zls_release_tags[@]} ; do
-        # Check if $release_tag starts with $zls_version_prefix
-        if [ ${release_tag#"$zls_version_prefix"} != $release_tag ] ; then
-            zls_release_tag=$release_tag
-            # Breaking here makes $zls_release_tag the first release that
-            # GitHub puts in its response. Thankfully, the order of
-            # releases in the response happens to be descending
-            # chronologically.
-            break
-        fi 
-    done
-    
-
     if [ -z "$zls_release_tag" ]; then
         logInfo "no compatible ZLS release was found"
+        return
     fi
         
     logInfo "downloading ZLS ${C_mark}$zls_release_tag${C_norm}..."
@@ -459,6 +432,7 @@ downloadZlsPrebuilt() {
 
     logInfo "extracting..."
     # Be careful not to overwrite any of the text files
+    mkdir -p "$ZIG_VERSIONED_DIR/doc-zls"
     tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$ZIG_VERSIONED_DIR/doc-zls"
     mv "$ZIG_VERSIONED_DIR/doc-zls/zls" "$ZIG_VERSIONED_DIR/"
 
@@ -466,9 +440,35 @@ downloadZlsPrebuilt() {
 }
 
 buildZlsFromSource() {
-    # TODO: Make this support other commits than master
-    logError "building ZLS from source is not yet supported"
-    exit 1
+    if [ -n "$zls_release_tag" ]; then
+        logInfo "downloading ZLS sources for $zls_release_tag"
+        archive_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/archive/refs/tags/$zls_release_tag.tar.gz"
+        archive_name="zls-src-$zls_release_tag.tar.gz"
+    else
+        logInfo "downloading ZLS sources from master branch"
+        archive_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/archive/refs/heads/master.tar.gz"
+        archive_name="zls-src-master.tar.gz"
+    fi
+
+    # if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ] ; then
+    #     logError "downloading archive failed with status $fetch_result"
+    #     exit 1
+    # fi
+
+    build_dir="$ZIG_VERSIONED_DIR/zls-src"
+    mkdir -p "$build_dir"
+
+    logInfo "extracting sources..."
+    tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$build_dir" --strip-components 1
+
+    logInfo "building ZLS..."
+    ZIG=$(realpath "$ZIG_VERSIONED_DIR/zig")
+    previous_dir=$(pwd)
+    cd $build_dir
+    $ZIG build -Doptimize=ReleaseSafe "-Dversion=$zls_version_prefix-dev.+zigsh"
+    cd $previous_dir
+
+    mv "$ZIG_VERSIONED_DIR/zls-src/zig-out/bin/zls" "$ZIG_VERSIONED_DIR/zls"
 }
 
 zls_installed=0
@@ -489,21 +489,59 @@ installZls() {
             ;;
     esac
 
-    if [ ${ZIGSH_ZLS_NO_PREBUILD:=0} == 0 ]; then
-        # Determine how to download ZLS
-        case "$version_resolved" in
-            # Nightly builds have to be built from source regardless
-            *-dev.*)
-                logInfo "zig version is a nightly build - building ZLS from source"
-                ;;
-            *)
-                downloadZlsPrebuilt
-                ;;
-        esac
-    else
-        logInfo "${C_mark}ZIGSH_ZLS_NO_PREBUILD${C_norm} is set - building ZLS from source"
+    # Determine which ZLS version to use
+    zls_release_tag=""
+
+    # Determine how to download ZLS
+    case "$version_resolved" in
+        # Nightly builds have to be built from source regardless
+        *-dev.*)
+            zls_version_prefix=$(sed -n "s/^\(.\..*\)\..*-dev\..*$/\1/p" <<< "$version_resolved")
+            try_prebuilt=0
+            ;;
+        *)
+            zls_version_prefix=$(sed -n "s/^\(.\..*\)\..*$/\1/p" <<< "$version_resolved")
+            try_prebuilt=1
+            ;;
+    esac
+    
+    if [ -n "$zls_version_prefix" ]; then
+        logInfo "finding appropriate ZLS version for ${C_mark}$zls_version_prefix.x${C_norm}..."
+        logDebug "${ZIGSH_ZLS_RELEASES_JSON:="$ZIG_BASE_DIR/zls-releases.json"}"
+        
+        if [ -z $(find "$ZIGSH_ZLS_RELEASES_JSON" -mmin "-${ZIGSH_ZLS_RELEASES_TTL:=30}" -print 2> /dev/null ) ] ; then
+            fetch_result=$(curl -L -s -S --write-out "%{http_code}" --output "$ZIG_BASE_DIR/zls-releases.json" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10"    \
+                "https://api.github.com/repos/$ZIGSH_ZLS_REPOSITORY/releases")
+            if [ "$fetch_result" != "200" ]; then
+                logError "could not get ZLS releases list"
+                exit 1
+            fi
+        fi
+        zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" < "$ZIG_BASE_DIR/zls-releases.json"))
+        for release_tag in ${zls_release_tags[@]} ; do
+            # Check if $release_tag starts with $zls_version_prefix
+            if [ ${release_tag#"$zls_version_prefix"} != $release_tag ] ; then
+                zls_release_tag=$release_tag
+                # Breaking here makes $zls_release_tag the first release that
+                # GitHub puts in its response. Thankfully, the order of
+                # releases in the response happens to be descending
+                # chronologically.
+                break
+            fi 
+        done
     fi
 
+    if [ "$try_prebuilt" == 1 ]; then
+        if [ ${ZIGSH_ZLS_NO_PREBUILD:=0} == 0 ]; then
+            downloadZlsPrebuilt
+        else
+            logInfo "${C_mark}ZIGSH_ZLS_NO_PREBUILD${C_norm} is set - building ZLS from source"
+        fi
+    else
+        logInfo "zig version is a nightly build - building ZLS from source"
+    fi
     if [ "$zls_installed" == 0 ]; then
         buildZlsFromSource
     fi
