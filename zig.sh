@@ -16,6 +16,9 @@
 #   ZIGSH_PROJECT_DIR
 #     Set the project directory for which Zig installations will be made.
 #     By default, this takes the value of the directory the script file is in.
+#   ZIGSH_PREFIX
+#     Set the directory where Zig will be installed.
+#     By default, it is equal to "$ZIGSH_PROJECT_DIR/zig".
 #   ZIGSH_ONLY_INSTALL
 #     Do not run Zig after having installed the tools.
 #   ZIGSH_NO_ZLS
@@ -129,7 +132,7 @@ if [ -z "$ZIG_VERSION" ]; then
     exit 1
 fi
 
-ZIG_BASE_DIR="$ZIGSH_PROJECT_DIR/zig"
+logDebug "prefix: ${ZIGSH_PREFIX:="$ZIGSH_PROJECT_DIR/zig"}"
 ZIG_MINISIGN_PUBKEY="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
 
 # Determine which platform we're on
@@ -150,7 +153,7 @@ if [ -z ${ZIGSH_PLATFORM+x} ]; then
     ZIGSH_PLATFORM="$architecture-$operating_system"
 fi
 
-ZIG_VERSIONED_DIR="$ZIG_BASE_DIR/$ZIGSH_PLATFORM-$ZIG_VERSION"
+ZIG_VERSIONED_DIR="$ZIGSH_PREFIX/$ZIGSH_PLATFORM-$ZIG_VERSION"
 
 last_successful_mirror=0
 mirroredFetch() {
@@ -267,11 +270,11 @@ verifySignatureOrExit() {
 zig_installed=0
 downloadZig() {
     logInfo "downloading zig..."
-    mkdir -p "$ZIG_BASE_DIR"
+    mkdir -p "$ZIGSH_PREFIX"
     # Determine which mirror is supposed to be used.
     if [ -z ${ZIGSH_MIRROR+x} ]; then
         if [ -z ${ZIGSH_MIRRORS+x} ]; then
-            ZIGSH_MIRRORS_TXT=${ZIGSH_MIRRORS_TXT:-$ZIG_BASE_DIR/community-mirrors.txt}
+            ZIGSH_MIRRORS_TXT=${ZIGSH_MIRRORS_TXT:-$ZIGSH_PREFIX/community-mirrors.txt}
             ZIGSH_MIRRORS_TTL=${ZIGSH_MIRRORS_TTL:-1440}
             if [ $(find "$ZIGSH_MIRRORS_TXT" -mmin "-$ZIGSH_MIRRORS_TTL" -print 2>/dev/null) ]; then
                 ZIGSH_MIRRORS=$(cat $ZIGSH_MIRRORS_TXT)
@@ -338,24 +341,24 @@ downloadZig() {
 
     logInfo "downloading ${C_mark}$archive_name${C_norm}..."
 
-    mirroredFetch -v archive_fetch_result -p "$archive_path" -o "$ZIG_BASE_DIR/$archive_name"
+    mirroredFetch -v archive_fetch_result -p "$archive_path" -o "$ZIGSH_PREFIX/$archive_name"
 
     if [ "$archive_fetch_result" != 1 ]; then
         logError "could not fetch archive; either the requested version does not exist, or it does not have a build for your platform"
         exit 1
     fi
 
-    mirroredFetch -v archive_sig_fetch_result -p "$archive_path.minisig" -o "$ZIG_BASE_DIR/$archive_name.minisig"
+    mirroredFetch -v archive_sig_fetch_result -p "$archive_path.minisig" -o "$ZIGSH_PREFIX/$archive_name.minisig"
     if [ "$archive_sig_fetch_result" != 1 ]; then
         logError "could not fetch archive signature, but archive could be fetched (this is strange)"
         exit 1
     fi
 
-    verifySignatureOrExit "$ZIG_BASE_DIR/$archive_name" "$ZIG_MINISIGN_PUBKEY" "$archive_name"
+    verifySignatureOrExit "$ZIGSH_PREFIX/$archive_name" "$ZIG_MINISIGN_PUBKEY" "$archive_name"
 
     logInfo "extracting..."
-    tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$ZIG_VERSIONED_DIR" --strip-components=1
-    rm "$ZIG_BASE_DIR/$archive_name" "$ZIG_BASE_DIR/$archive_name.minisig"
+    tar -xf "$ZIGSH_PREFIX/$archive_name" -C "$ZIG_VERSIONED_DIR" --strip-components=1
+    rm "$ZIGSH_PREFIX/$archive_name" "$ZIGSH_PREFIX/$archive_name.minisig"
 
     # Add activation script to directory for convenience
     cat <<EOF >"$ZIG_VERSIONED_DIR/activate.bash"
@@ -406,9 +409,9 @@ downloadZlsPrebuilt() {
         ;;
     esac
     release_base_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/releases/download/$zls_release_tag"
-    curl_args=("-L" "-s" "-f" "-S" "-o" "$ZIG_BASE_DIR/$archive_name" "$release_base_url/$archive_name_remote")
+    curl_args=("-L" "-s" "-f" "-S" "-o" "$ZIGSH_PREFIX/$archive_name" "$release_base_url/$archive_name_remote")
     if [ -n "$zls_minisign_pubkey" ]; then
-        curl_args=(${curl_args[@]} -o "$ZIG_BASE_DIR/$archive_name.minisig" "$release_base_url/$archive_name_remote.minisig")
+        curl_args=(${curl_args[@]} -o "$ZIGSH_PREFIX/$archive_name.minisig" "$release_base_url/$archive_name_remote.minisig")
     fi
 
     if ! fetch_result=$(curl --write-out "%{http_code}" ${curl_args[@]}); then
@@ -430,13 +433,13 @@ downloadZlsPrebuilt() {
     fi
 
     if [ -n "$zls_minisign_pubkey" ]; then
-        verifySignatureOrExit "$ZIG_BASE_DIR/$archive_name" "$zls_minisign_pubkey" "$archive_name"
+        verifySignatureOrExit "$ZIGSH_PREFIX/$archive_name" "$zls_minisign_pubkey" "$archive_name"
     fi
 
     logInfo "extracting..."
     # Be careful not to overwrite any of the text files
     mkdir -p "$ZIG_VERSIONED_DIR/doc-zls"
-    tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$ZIG_VERSIONED_DIR/doc-zls"
+    tar -xf "$ZIGSH_PREFIX/$archive_name" -C "$ZIG_VERSIONED_DIR/doc-zls"
     mv "$ZIG_VERSIONED_DIR/doc-zls/zls" "$ZIG_VERSIONED_DIR/"
 
     zls_installed=1
@@ -476,13 +479,13 @@ buildZlsFromSource() {
     fi
 
     if [ $is_archive == 1 ]; then
-        if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIG_BASE_DIR/$archive_name" $archive_url) && [ "$fetch_result" != "200" ]; then
+        if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIGSH_PREFIX/$archive_name" $archive_url) && [ "$fetch_result" != "200" ]; then
             logError "downloading archive failed with status $fetch_result"
             exit 1
         fi
         logInfo "extracting sources..."
-        tar -xf "$ZIG_BASE_DIR/$archive_name" -C "$build_dir" --strip-components 1
-        rm "$ZIG_BASE_DIR/$archive_name"
+        tar -xf "$ZIGSH_PREFIX/$archive_name" -C "$build_dir" --strip-components 1
+        rm "$ZIGSH_PREFIX/$archive_name"
     fi
 
     logInfo "building ZLS..."
@@ -533,9 +536,9 @@ installZls() {
     if [ -n "$zls_version_prefix" ]; then
         logInfo "finding appropriate ZLS version for ${C_mark}$zls_version_prefix.x${C_norm}..."
 
-        logDebug "${ZIGSH_ZLS_RELEASES_JSON:="$ZIG_BASE_DIR/zls-releases.json"}"
+        logDebug "${ZIGSH_ZLS_RELEASES_JSON:="$ZIGSH_PREFIX/zls-releases.json"}"
         if [ -z $(find "$ZIGSH_ZLS_RELEASES_JSON" -mmin "-${ZIGSH_ZLS_RELEASES_TTL:=30}" -print 2>/dev/null) ]; then
-            fetch_result=$(curl -L -s -S --write-out "%{http_code}" --output "$ZIG_BASE_DIR/zls-releases.json" \
+            fetch_result=$(curl -L -s -S --write-out "%{http_code}" --output "$ZIGSH_PREFIX/zls-releases.json" \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2026-03-10" \
                 "https://api.github.com/repos/$ZIGSH_ZLS_REPOSITORY/releases")
@@ -546,7 +549,7 @@ installZls() {
         else
             logDebug "using cached ZLS releases"
         fi
-        zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" <"$ZIG_BASE_DIR/zls-releases.json"))
+        zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" <"$ZIGSH_PREFIX/zls-releases.json"))
         for release_tag in ${zls_release_tags[@]}; do
             # Check if $release_tag starts with $zls_version_prefix
             if [ ${release_tag#"$zls_version_prefix"} != $release_tag ]; then
