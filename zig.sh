@@ -91,7 +91,7 @@ C_reset=""
 # Snippet based on: https://unix.stackexchange.com/a/10065
 if test -t 1; then
     ncolors=$(tput colors)
-    if test -n "$ncolors" && test $ncolors -ge 8; then
+    if test -n "$ncolors" && test "$ncolors" -ge 8; then
         C_norm="$(tput sgr0)$(tput setaf 7)"
         C_dbg="$(tput sitm)$(tput dim)"
         C_info="$(tput bold)$(tput setaf 6)"
@@ -102,6 +102,8 @@ if test -t 1; then
 fi
 
 logWrite() {
+    # NOTE: This is intentional behaviour.
+    # shellcheck disable=2059
     printf "$@" >&2
 }
 logError() {
@@ -111,14 +113,14 @@ logInfo() {
     logWrite "${C_info}zig.sh: ${C_norm}%s${C_reset}\n" "$*"
 }
 logDebug() {
-    if [ $ZIGSH_VERBOSE == 1 ]; then
+    if [ "$ZIGSH_VERBOSE" == 1 ]; then
         logWrite "${C_dbg}zig.sh: %s${C_reset}\n" "$*"
     fi
 }
 
 ZIGSH_VERBOSE=${ZIGSH_VERBOSE:=0}
 
-if [ $ZIGSH_VERBOSE ]; then
+if [ "$ZIGSH_VERBOSE" ]; then
     exec 3>&2
 else
     exec 3>/dev/null
@@ -191,7 +193,7 @@ fi
 if [ -z "$ZIG_VERSION" ] && [ -f "$ZIGSH_PROJECT_DIR/build.zig.zon" ]; then
     bzz_min_version=$(cat "$ZIGSH_PROJECT_DIR/build.zig.zon" | sed -n "s/^.*minimum_zig_version\s*=\s*\"\(.*\)\".*$/\1/p")
     # bzz_min_version is empty if build.zig.zon does not contain a minimum_zig_version
-    if [ -n $bzz_min_version ]; then
+    if [ -n "$bzz_min_version" ]; then
         ZIG_VERSION=$bzz_min_version
     fi
 fi
@@ -253,12 +255,12 @@ mirroredFetch() {
 
     success=0
     mirror_count=${#ZIGSH_MIRRORS[@]}
-    for mirror_index_base in ${!ZIGSH_MIRRORS[@]}; do
-        mirror_index=$((($mirror_index_base + $last_successful_mirror) % $mirror_count))
+    for mirror_index_base in "${!ZIGSH_MIRRORS[@]}"; do
+        mirror_index=$(((mirror_index_base + last_successful_mirror) % mirror_count))
         mirror=${ZIGSH_MIRRORS[$mirror_index]}
         full_url="$mirror$path"
         logDebug "attempting to download $full_url"
-        if ! result=$(curl -S -s --write-out "%{http_code}" ${curl_args[@]} "$full_url" 2>&3); then
+        if ! result=$(curl -S -s --write-out "%{http_code}" "${curl_args[@]}" "$full_url" 2>&3); then
             logDebug "download failed"
             continue
         fi
@@ -280,12 +282,12 @@ mirroredFetch() {
         last_successful_mirror=$successful_mirror
     fi
     if [ "$success" == 0 ]; then
-        rm $output_file
+        rm "$output_file"
     fi
 
     if [ -n "$output_var" ]; then
         logDebug "variable $output_var"
-        printf -v "$output_var" "$success"
+        printf -v "$output_var" "%s" "$success"
     fi
 }
 
@@ -308,16 +310,19 @@ verifySignatureOrExit() {
 
     logInfo "verifying signature for $file"
 
-    if ! trusted_comment=$(minisign -V -Q -P "$pubkey" -m "$file"); then
+    if ! trusted_comment="$(minisign -V -Q -P "$pubkey" -m "$file")" ; then
         logError "${C_mark}$file${C_norm}'s signature is invalid!"
         exit 1
     fi
 
     sig_valid_file=0
+    # NOTE: This should work as long as the fields do not contain spaces.
+    # shellcheck disable=SC2068
     for field in ${trusted_comment[@]}; do
         case $field in
         file:*)
-            IFS=':' read -ra field <<<$field
+            IFS=':' read -ra field <<<"$field"
+            logDebug "${field[@]}"
             if [ "${field[1]}" != "$expected_file_field" ]; then
                 logDebug "file field: ${field[1]}; expected: $expected_file_field"
                 logError "${C_mark}$file${C_norm}'s signature has an invalid file field"
@@ -345,8 +350,8 @@ downloadZig() {
         if [ -z ${ZIGSH_MIRRORS+x} ]; then
             ZIGSH_MIRRORS_TXT=${ZIGSH_MIRRORS_TXT:-$ZIGSH_PREFIX/community-mirrors.txt}
             ZIGSH_MIRRORS_TTL=${ZIGSH_MIRRORS_TTL:-1440}
-            if [ $(find "$ZIGSH_MIRRORS_TXT" -mmin "-$ZIGSH_MIRRORS_TTL" -print 2>/dev/null) ]; then
-                ZIGSH_MIRRORS=$(cat $ZIGSH_MIRRORS_TXT)
+            if [ "$(find "$ZIGSH_MIRRORS_TXT" -mmin "-$ZIGSH_MIRRORS_TTL" -print 2>/dev/null)" ]; then
+                mirrors_raw=$(cat "$ZIGSH_MIRRORS_TXT")
             else
                 logInfo "downloading mirrors list from ${C_mark}${ZIGSH_MIRRORS_URL:=https://ziglang.org/download/community-mirrors.txt}${C_norm}..."
                 if ! curl -s -f --output "$ZIGSH_MIRRORS_TXT" "$ZIGSH_MIRRORS_URL" 2>&3; then
@@ -371,14 +376,19 @@ downloadZig() {
                         "https://zig.vortan.dev/zig"
                     )
                 else
-                    shuf -o $ZIGSH_MIRRORS_TXT <$ZIGSH_MIRRORS_TXT
-                    ZIGSH_MIRRORS=$(cat $ZIGSH_MIRRORS_TXT)
+                    # NOTE: According to shuf's documentation, it always reads
+                    #       all input before opening the output file, so this
+                    #       pipe is safe.
+                    # shellcheck disable=SC2094
+                    shuf -o "$ZIGSH_MIRRORS_TXT" <"$ZIGSH_MIRRORS_TXT"
+                    mirrors_raw=$(cat "$ZIGSH_MIRRORS_TXT")
                 fi
             fi
         fi
         # Ensure ZIGSH_MIRRORS is an array
-        readarray -t mirrors <<<"$ZIGSH_MIRRORS"
-        ZIGSH_MIRRORS=(${mirrors[@]})
+        if [ -n "$mirrors_raw" ]; then
+            readarray -t ZIGSH_MIRRORS <<<"$mirrors_raw"
+        fi
         logDebug "mirror list: ${ZIGSH_MIRRORS[*]}"
     fi
 
@@ -406,19 +416,20 @@ downloadZig() {
         ;;
     esac
 
-    mkdir -p $ZIG_VERSIONED_DIR
+    mkdir -p "$ZIG_VERSIONED_DIR"
 
     logInfo "downloading ${C_mark}$archive_name${C_norm}..."
 
-    mirroredFetch -v archive_fetch_result -p "$archive_path" -o "$ZIGSH_PREFIX/$archive_name"
+    fetch_result=1
+    mirroredFetch -v fetch_result -p "$archive_path" -o "$ZIGSH_PREFIX/$archive_name"
 
-    if [ "$archive_fetch_result" != 1 ]; then
+    if [ "$fetch_result" != 1 ]; then
         logError "could not fetch archive; either the requested version does not exist, or it does not have a build for your platform"
         exit 1
     fi
 
-    mirroredFetch -v archive_sig_fetch_result -p "$archive_path.minisig" -o "$ZIGSH_PREFIX/$archive_name.minisig"
-    if [ "$archive_sig_fetch_result" != 1 ]; then
+    mirroredFetch -v fetch_result -p "$archive_path.minisig" -o "$ZIGSH_PREFIX/$archive_name.minisig"
+    if [ "$fetch_result" != 1 ]; then
         logError "could not fetch archive signature, but archive could be fetched (this is strange)"
         exit 1
     fi
@@ -474,17 +485,17 @@ downloadZlsPrebuilt() {
     release_base_url="https://github.com/$ZIGSH_ZLS_REPOSITORY/releases/download/$zls_release_tag"
     curl_args=("-L" "-s" "-f" "-S" "-o" "$ZIGSH_PREFIX/$archive_name" "$release_base_url/$archive_name_remote")
     if [ -n "$zls_minisign_pubkey" ]; then
-        curl_args=(${curl_args[@]} -o "$ZIGSH_PREFIX/$archive_name.minisig" "$release_base_url/$archive_name_remote.minisig")
+        curl_args+=(-o "$ZIGSH_PREFIX/$archive_name.minisig" "$release_base_url/$archive_name_remote.minisig")
     fi
 
-    if ! fetch_result=$(curl --write-out "%{http_code}" ${curl_args[@]}); then
+    if ! fetch_result=$(curl --write-out "%{http_code}" "${curl_args[@]}"); then
         logDebug "fetch result: $fetch_result"
         logError "failed to fetch release archive; building from source"
         return
     fi
 
     errored=0
-    for result in ${fetch_result[@]}; do
+    for result in "${fetch_result[@]}"; do
         if [ "$result" == "200" ]; then
             logDebug "ZLS download failed with status $result"
             errored=1
@@ -523,16 +534,16 @@ buildZlsFromSource() {
             is_archive=0
             if [ -d "$build_dir/.git" ]; then
                 logDebug "$build_dir/.git exists, pulling and checking out"
-                cd $build_dir
+                cd "$build_dir"
                 git pull
                 git checkout master
-                cd $previous_dir
+                cd "$previous_dir"
             elif [ -d "$build_dir" ]; then
                 logError "build directory ${C_mark}$build_dir${C_norm} already exists - try deleting it"
                 exit 1
             else
                 logDebug "cloning git repository"
-                git clone "https://github.com/$ZIGSH_ZLS_REPOSITORY" $build_dir
+                git clone "https://github.com/$ZIGSH_ZLS_REPOSITORY" "$build_dir"
             fi
         else
             logInfo "downloading ZLS sources from master branch archive"
@@ -542,7 +553,7 @@ buildZlsFromSource() {
     fi
 
     if [ $is_archive == 1 ]; then
-        if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIGSH_PREFIX/$archive_name" $archive_url) && [ "$fetch_result" != "200" ]; then
+        if ! fetch_result=$(curl -LSsf --write-out "%{http_code}" -o "$ZIGSH_PREFIX/$archive_name" "$archive_url") && [ "$fetch_result" != "200" ]; then
             logError "downloading archive failed with status $fetch_result"
             exit 1
         fi
@@ -554,9 +565,9 @@ buildZlsFromSource() {
     logInfo "building ZLS..."
     ZIG=$(realpath "$ZIG_VERSIONED_DIR/zig")
 
-    cd $build_dir
+    cd "$build_dir"
     $ZIG build -Doptimize=ReleaseSafe
-    cd $previous_dir
+    cd "$previous_dir"
 
     mv "$ZIG_VERSIONED_DIR/zls-src/zig-out/bin/zls" "$ZIG_VERSIONED_DIR/zls"
 
@@ -600,7 +611,7 @@ installZls() {
         logInfo "finding appropriate ZLS version for ${C_mark}$zls_version_prefix.x${C_norm}..."
 
         logDebug "${ZIGSH_ZLS_RELEASES_JSON:="$ZIGSH_PREFIX/zls-releases.json"}"
-        if [ -z $(find "$ZIGSH_ZLS_RELEASES_JSON" -mmin "-${ZIGSH_ZLS_RELEASES_TTL:=30}" -print 2>/dev/null) ]; then
+        if [ -z "$(find "$ZIGSH_ZLS_RELEASES_JSON" -mmin "-${ZIGSH_ZLS_RELEASES_TTL:=30}" -print 2>/dev/null)" ]; then
             fetch_result=$(curl -L -s -S --write-out "%{http_code}" --output "$ZIGSH_PREFIX/zls-releases.json" \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2026-03-10" \
@@ -612,10 +623,12 @@ installZls() {
         else
             logDebug "using cached ZLS releases"
         fi
+        # NOTE: Release tags should never contain whitespace, so this is fine.
+        # shellcheck disable=SC2207
         zls_release_tags=($(sed -n "s/^.*\"tag_name\": \"\(.*\)\".*$/\1/p" <"$ZIGSH_PREFIX/zls-releases.json"))
-        for release_tag in ${zls_release_tags[@]}; do
+        for release_tag in "${zls_release_tags[@]}"; do
             # Check if $release_tag starts with $zls_version_prefix
-            if [ ${release_tag#"$zls_version_prefix"} != $release_tag ]; then
+            if [ "${release_tag#"$zls_version_prefix"}" != "$release_tag" ]; then
                 zls_release_tag=$release_tag
                 # Breaking here makes $zls_release_tag the first release that
                 # GitHub puts in its response. Thankfully, the order of
@@ -629,7 +642,7 @@ installZls() {
     logDebug "version prefix: $zls_version_prefix / release tag: $zls_release_tag"
 
     if [ "$try_prebuilt" == 1 ]; then
-        if [ ${ZIGSH_ZLS_NO_PREBUILD:=0} == 0 ]; then
+        if [ "${ZIGSH_ZLS_NO_PREBUILD:=0}" == 0 ]; then
             downloadZlsPrebuilt
         else
             logInfo "${C_mark}ZIGSH_ZLS_NO_PREBUILD${C_norm} is set - building ZLS from source"
@@ -642,10 +655,10 @@ installZls() {
     fi
 }
 
-if [ ! -f "$ZIG_VERSIONED_DIR/zig" ] || [ ${ZIGSH_FORCE_ZIG:=0} != 0 ]; then
+if [ ! -f "$ZIG_VERSIONED_DIR/zig" ] || [ "${ZIGSH_FORCE_ZIG:=0}" != 0 ]; then
     downloadZig
 fi
-if [ "$ZIGSH_RUN" == "zls" && ! -f "$ZIG_VERSIONED_DIR/zls" ] || [ ${ZIGSH_FORCE_ZLS:=0} != 0 ]; then
+if { [ "$ZIGSH_RUN" == "zls" ] && [ ! -f "$ZIG_VERSIONED_DIR/zls" ]; } || [ "${ZIGSH_FORCE_ZLS:=0}" != 0 ]; then
     installZls
 fi
 
@@ -655,10 +668,10 @@ fi
 
 case "$ZIGSH_RUN" in
 zig)
-    "$ZIG_VERSIONED_DIR/zig" $@
+    "$ZIG_VERSIONED_DIR/zig" "$@"
     ;;
 zls)
-    "$ZIG_VERSIONED_DIR/zls" $@
+    "$ZIG_VERSIONED_DIR/zls" "$@"
     ;;
 "0" | "")
     if [ "$zig_installed" == 0 ] && [ "$zls_installed" == 0 ]; then
