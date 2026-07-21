@@ -8,23 +8,38 @@
 #   https://matklad.github.io/2023/06/02/the-worst-zig-version-manager.html
 #
 # Options (environment variables)
-#   ZIGSH_FORCE_DOWNLOAD
-#     Forces a download of Zig regardless of whether it is already downloaded
-#     or not.
 #   ZIGSH_VERBOSE
 #     Output more stuff. Useful for debugging.
 #   ZIGSH_PROJECT_DIR
-#     Set the project directory for which Zig installations will be made.
-#     By default, this takes the value of the directory the script file is in.
+#     Set the project directory which zig.sh will check for project-specific
+#     information (e.g. which Zig version to use.)
+#     By default, this is the the first of the current working directory or its
+#     parents to contain any file that might be a project.
 #   ZIGSH_PREFIX
 #     Set the directory where Zig will be installed.
-#     By default, it is equal to "$ZIGSH_PROJECT_DIR/zig".
-#   ZIGSH_ONLY_INSTALL
-#     Do not run Zig after having installed the tools.
-#   ZIGSH_NO_ZLS
-#     Do not install ZLS.
-#     By default this option is 0, meaning that ZLS is installed.
-#     The ZLS version is based on the ZIG_VERSION.
+#     By default, it is equal to "$script_dir/zig", where $script_dir is the
+#     directory that this script resides in (or the current directory if there
+#     is no such directory.)
+#   ZIGSH_RUN
+#     What to do after installing Zig (and related tools).
+#     (Defaults based on script names respect symlinks.)
+#     One of the following:
+#       "zig"
+#         Run the Zig executable, installing it if necessary.
+#         This is the default if this script is named "zig.sh" or "zig".
+#       "zls"
+#         Run the ZLS executable, installing it (and Zig) if necessary.
+#         This is the default if this script is named "zls.sh" or "zls".
+#       "" | "0"
+#         Do not do anything.
+#   ZIGSH_FORCE_ZIG
+#     Force zig.sh to download Zig.
+#     Any value other than "0" is interpreted as true.
+#     By default equal to "0".
+#   ZIGSH_FORCE_ZLS
+#     Force zig.sh to download ZLS.
+#     Any value other than "0" is interpreted as true.
+#     By default equa to "0".
 #   ZIG_VERSION
 #     Override the version of Zig used.
 #     By default:
@@ -109,9 +124,63 @@ else
     exec 3>/dev/null
 fi
 
-# By default, ZIGSH_PROJECT_DIR is whatever directory zig.sh is in.
 # https://stackoverflow.com/a/246128/11009859
-ZIGSH_PROJECT_DIR=${ZIGSH_PROJECT_DIR:=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+logDebug "script directory: $script_dir"
+
+if [ -z "${ZIGSH_RUN+x}" ]; then
+    script_name=$(basename "${BASH_SOURCE[0]}")
+    case "$script_name" in
+    zig | zig.sh)
+        ZIGSH_RUN=zig
+        ;;
+    zls | zls.sh)
+        ZIGSH_RUN=zls
+        ;;
+    *)
+        logDebug "unrecognised filename, running zig"
+        ZIGSH_RUN=zig
+        ;;
+    esac
+    logDebug "ZIGSH_RUN: $ZIGSH_RUN"
+else
+    logInfo "ZIGSH_RUN is set to $ZIGSH_RUN"
+fi
+
+if [ -z "${ZIGSH_PROJECT_DIR:=}" ]; then
+    # Find the first directory which might be a project directory.
+    # Otherwise, default to script directory.
+    current=$(pwd)
+    while [ "$current" != "/" ]; do
+        logDebug "checking $current for signs of being project directory"
+        if [ -d "$current/.git" ] || [ -f "$current/build.zig" ] || [ -f "$current/build.zig.zon" ]; then
+            ZIGSH_PROJECT_DIR=$current
+            break
+        fi
+        current=$(dirname -- "$current")
+    done
+
+    if [ -z "$ZIGSH_PROJECT_DIR" ]; then
+        logInfo "running zig.sh outside a project directory; assuming script directory is project directory"
+        ZIGSH_PROJECT_DIR=$script_dir
+    fi
+fi
+
+logDebug "project dir: $ZIGSH_PROJECT_DIR"
+
+if [ -z "${ZIGSH_PREFIX:=}" ]; then
+    logDebug "no ZIGSH_PREFIX has been set"
+
+    if [ -f "$script_dir/zig" ]; then
+        # This script might've been renamed to just "zig"; for example, the user
+        # may wish to use zig.sh by default to ease management.
+        # In such a case, we put data in `.zigsh` instead.
+        ZIGSH_PREFIX="$script_dir/.zigsh"
+    else
+        ZIGSH_PREFIX="$script_dir/zig"
+    fi
+    logDebug "ZIGSH_PREFIX: $ZIGSH_PREFIX"
+fi
 
 # ZIG_VERSION detection
 ZIG_VERSION=${ZIG_VERSION:=}
@@ -370,12 +439,6 @@ EOF
     zig_installed=1
 }
 
-# If zig exists, don't download it.
-# Allow overriding.
-if [ ! -f "$ZIG_VERSIONED_DIR/zig" ] || [ ! -z ${ZIGSH_FORCE_DOWNLOAD+x} ]; then
-    downloadZig
-fi
-
 # ZLS support
 
 ZIGSH_ZLS_REPOSITORY=${ZIGSH_ZLS_REPOSITORY:="zigtools/zls"}
@@ -579,7 +642,10 @@ installZls() {
     fi
 }
 
-if [ ! -f "$ZIG_VERSIONED_DIR/zls" ] || [ ! -z ${ZIGSH_FORCE_DOWNLOAD+x} ]; then
+if [ ! -f "$ZIG_VERSIONED_DIR/zig" ] || [ ${ZIGSH_FORCE_ZIG:=0} != 0 ]; then
+    downloadZig
+fi
+if [ "$ZIGSH_RUN" == "zls" && ! -f "$ZIG_VERSIONED_DIR/zls" ] || [ ${ZIGSH_FORCE_ZLS:=0} != 0 ]; then
     installZls
 fi
 
@@ -587,12 +653,19 @@ if [ "$zig_installed" == 1 ] || [ "$zls_installed" == 1 ]; then
     logInfo "done! enjoy programming in Zig ${C_mark}<3"
 fi
 
-if [ "${ZIGSH_ONLY_INSTALL:=0}" != 0 ]; then
-    logDebug "ZIGSH_ONLY_INSTALLED is set - exiting soon"
+case "$ZIGSH_RUN" in
+zig)
+    "$ZIG_VERSIONED_DIR/zig" $@
+    ;;
+zls)
+    "$ZIG_VERSIONED_DIR/zls" $@
+    ;;
+"0" | "")
     if [ "$zig_installed" == 0 ] && [ "$zls_installed" == 0 ]; then
         logInfo "Zig is already installed"
     fi
-    exit 0
-fi
-
-"$ZIG_VERSIONED_DIR/zig" $@
+    ;;
+*)
+    logError "invalid ZIGSH_RUN value '$ZIGSH_RUN'"
+    ;;
+esac
